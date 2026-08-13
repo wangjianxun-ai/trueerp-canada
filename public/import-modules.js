@@ -31,7 +31,7 @@ async function renderImportedModule(config){
   const response=await fetch(`${config.endpoint}?offset=${current.page*pageSize}&limit=${pageSize}&q=${encodeURIComponent(current.query)}`);
   if(response.ok&&response.headers.get('content-type')?.includes('application/json'))data=await response.json();
   else{
-    const files={sales:'/data/sales-history.json.gz',purchases:'/data/purchase-history.json.gz',inventory:'/data/inventory-history.json.gz',shipments:'/data/shipment-history.json.gz'};
+    const files={sales:'data/sales-history.json.gz',purchases:'data/purchase-history.json.gz',inventory:'data/inventory-history.json.gz',shipments:'data/shipment-history.json.gz'};
     const source=await fetchCompressedJson(files[config.kind]);
     const query=current.query.toLowerCase();const filtered=query?source.records.filter(record=>Object.values(record).some(value=>String(value).toLowerCase().includes(query))):source.records;
     const offset=current.page*pageSize;data={fields:source.fields,total:filtered.length,offset,limit:pageSize,records:filtered.slice(offset,offset+pageSize)};
@@ -68,7 +68,7 @@ async function renderImportedModule(config){
 }
 
 async function renderPendingShipments(results,current,config){
-  const source=await fetchCompressedJson('/data/sales-history.json.gz');const overrides=orderOverrides();
+  const source=await fetchCompressedJson('data/sales-history.json.gz');const overrides=orderOverrides();
   const unique=new Map();
   source.records.forEach(record=>{const id=record.订单编号;if(!id)return;const update=overrides[id];const status=update?.status||record.订单状态;if(String(status).includes('待发货')&&!String(status).includes('已发货'))unique.set(id,{...record,订单状态:status})});
   let rows=[...unique.values()];const query=current.query.toLowerCase();if(query)rows=rows.filter(record=>Object.values(record).some(value=>String(value).toLowerCase().includes(query)));
