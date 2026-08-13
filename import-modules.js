@@ -10,6 +10,8 @@ const pageSize=100;
 function valueText(value){return value===null||value===undefined||value===''?'-':String(value)}
 function statusClass(value){const text=String(value);if(text.includes('完成')||text.includes('已发'))return'green';if(text.includes('等待')||text.includes('待'))return'orange';if(text.includes('关闭')||text.includes('取消'))return'red';return'blue'}
 async function fetchCompressedJson(url){const response=await fetch(url);if(!response.ok)throw new Error(`数据载入失败：${response.status}`);const stream=response.body.pipeThrough(new DecompressionStream('gzip'));return new Response(stream).json()}
+function orderOverrides(){try{return JSON.parse(localStorage.getItem('trueerp_order_status_overrides'))||{}}catch{return{}}}
+function saveOrderOverrides(value){localStorage.setItem('trueerp_order_status_overrides',JSON.stringify(value))}
 
 function createCell(tag,value,field){
   const cell=document.createElement(tag);const text=valueText(value);
@@ -24,6 +26,7 @@ async function renderImportedModule(config){
   if(!results||results.dataset.importKind===config.kind)return;
   results.dataset.importKind=config.kind;results.innerHTML='<div class="module-loading">正在载入历史数据…</div>';
   const current=moduleState[config.kind];
+  if(config.kind==='shipments'){await renderPendingShipments(results,current,config);return}
   let data;
   const response=await fetch(`${config.endpoint}?offset=${current.page*pageSize}&limit=${pageSize}&q=${encodeURIComponent(current.query)}`);
   if(response.ok&&response.headers.get('content-type')?.includes('application/json'))data=await response.json();
@@ -37,6 +40,11 @@ async function renderImportedModule(config){
   if(config.kind==='purchases'&&!data.fields.includes('保质期')){
     const insertAt=Math.max(0,data.fields.indexOf('预计到货日期')+1);data.fields.splice(insertAt,0,'保质期');
   }
+  if(config.kind==='sales'){
+    const overrides=orderOverrides();
+    data.records=data.records.map(record=>{const update=overrides[record.订单编号];return update?{...record,订单状态:update.status,物流公司:update.carrier||record.物流公司,物流单号:update.tracking||record.物流单号,发货时间:update.shippedAt||record.发货时间}:record});
+    if(!data.fields.includes('操作'))data.fields.push('操作');
+  }
 
   const toolbar=document.createElement('div');toolbar.className='toolbar imported-toolbar';
   toolbar.innerHTML=`<div class="search"><input placeholder="搜索全部字段" value="${current.query.replaceAll('"','&quot;')}"></div><button class="btn primary" data-history-search>查询</button><button class="btn" data-history-reset>重置</button><span class="muted">原始字段 ${data.fields.length} 个</span>`;
@@ -45,7 +53,7 @@ async function renderImportedModule(config){
   const wrap=document.createElement('div');wrap.className='table-wrap imported-table';
   const table=document.createElement('table');const head=document.createElement('thead');const headRow=document.createElement('tr');
   data.fields.forEach(field=>headRow.appendChild(createCell('th',field,field)));head.appendChild(headRow);table.appendChild(head);
-  const body=document.createElement('tbody');data.records.forEach(record=>{const row=document.createElement('tr');data.fields.forEach(field=>row.appendChild(createCell('td',record[field],field)));body.appendChild(row)});table.appendChild(body);wrap.appendChild(table);card.appendChild(wrap);
+  const body=document.createElement('tbody');data.records.forEach(record=>{const row=document.createElement('tr');data.fields.forEach(field=>{if(field==='操作'){const cell=document.createElement('td');if(String(record.订单状态).includes('待审核'))cell.innerHTML=`<button class="btn primary" data-audit-order="${record.订单编号}">审核</button>`;else cell.textContent='-';row.appendChild(cell)}else row.appendChild(createCell('td',record[field],field))});body.appendChild(row)});table.appendChild(body);wrap.appendChild(table);card.appendChild(wrap);
   const footer=document.createElement('div');footer.className='footer-row imported-pagination';const from=data.total?data.offset+1:0;const to=Math.min(data.offset+data.records.length,data.total);
   footer.innerHTML=`<span>显示 ${from}-${to} 条，共 ${data.total.toLocaleString('zh-CN')} 条</span><span class="page-actions"><button class="btn" data-history-prev ${current.page===0?'disabled':''}>上一页</button><b>第 ${current.page+1} 页</b><button class="btn" data-history-next ${to>=data.total?'disabled':''}>下一页</button></span>`;card.appendChild(footer);results.appendChild(card);
 
@@ -56,6 +64,27 @@ async function renderImportedModule(config){
   toolbar.querySelector('[data-history-reset]').onclick=()=>reload(0,'');
   footer.querySelector('[data-history-prev]').onclick=()=>reload(Math.max(0,current.page-1),current.query);
   footer.querySelector('[data-history-next]').onclick=()=>reload(current.page+1,current.query);
+  results.querySelectorAll('[data-audit-order]').forEach(button=>button.onclick=()=>{const overrides=orderOverrides();overrides[button.dataset.auditOrder]={...(overrides[button.dataset.auditOrder]||{}),status:'待发货',auditedAt:new Date().toISOString()};saveOrderOverrides(overrides);reload(current.page,current.query)});
+}
+
+async function renderPendingShipments(results,current,config){
+  const source=await fetchCompressedJson('/data/sales-history.json.gz');const overrides=orderOverrides();
+  const unique=new Map();
+  source.records.forEach(record=>{const id=record.订单编号;if(!id)return;const update=overrides[id];const status=update?.status||record.订单状态;if(String(status).includes('待发货')&&!String(status).includes('已发货'))unique.set(id,{...record,订单状态:status})});
+  let rows=[...unique.values()];const query=current.query.toLowerCase();if(query)rows=rows.filter(record=>Object.values(record).some(value=>String(value).toLowerCase().includes(query)));
+  const offset=current.page*pageSize,total=rows.length;rows=rows.slice(offset,offset+pageSize);results.innerHTML='';
+  const toolbar=document.createElement('div');toolbar.className='toolbar imported-toolbar';toolbar.innerHTML=`<div class="search"><input placeholder="搜索未发货订单" value="${current.query.replaceAll('"','&quot;')}"></div><button class="btn primary" data-pending-search>查询</button><button class="btn" data-pending-reset>重置</button><span class="muted">审核通过后自动进入此列表</span>`;results.appendChild(toolbar);
+  const card=document.createElement('div');card.className='card imported-card';const wrap=document.createElement('div');wrap.className='table-wrap imported-table';
+  wrap.innerHTML=`<table><thead><tr><th>订单编号</th><th>付款时间</th><th>销售渠道</th><th>客户账号</th><th>货品编号</th><th>货品名称</th><th>数量</th><th>发货仓库</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows.map(record=>`<tr><td class="mono">${valueText(record.订单编号)}</td><td>${valueText(record.付款时间)}</td><td>${valueText(record.销售渠道)}</td><td>${valueText(record.客户账号)}</td><td class="mono">${valueText(record.货品编号)}</td><td>${valueText(record.货品名称)}</td><td>${valueText(record.数量)}</td><td>${valueText(record.发货仓库)}</td><td><span class="tag orange">待发货</span></td><td><button class="btn primary" data-complete-shipment="${record.订单编号}">发货</button></td></tr>`).join('')||'<tr><td colspan="10"><div class="empty">暂无待发货订单</div></td></tr>'}</tbody></table>`;card.appendChild(wrap);
+  const footer=document.createElement('div');footer.className='footer-row imported-pagination';const from=total?offset+1:0,to=Math.min(offset+rows.length,total);footer.innerHTML=`<span>显示 ${from}-${to} 条，共 ${total.toLocaleString('zh-CN')} 条待发货订单</span><span class="page-actions"><button class="btn" data-pending-prev ${current.page===0?'disabled':''}>上一页</button><b>第 ${current.page+1} 页</b><button class="btn" data-pending-next ${to>=total?'disabled':''}>下一页</button></span>`;card.appendChild(footer);results.appendChild(card);
+  const reload=(page,search)=>{moduleState.shipments={page,query:search};results.dataset.importKind='';renderImportedModule(config).catch(showModuleError)},input=toolbar.querySelector('input');
+  toolbar.querySelector('[data-pending-search]').onclick=()=>reload(0,input.value.trim());toolbar.querySelector('[data-pending-reset]').onclick=()=>reload(0,'');input.onkeydown=event=>{if(event.key==='Enter')reload(0,input.value.trim())};footer.querySelector('[data-pending-prev]').onclick=()=>reload(Math.max(0,current.page-1),current.query);footer.querySelector('[data-pending-next]').onclick=()=>reload(current.page+1,current.query);
+  results.querySelectorAll('[data-complete-shipment]').forEach(button=>button.onclick=()=>openShipmentDialog(button.dataset.completeShipment,()=>reload(current.page,current.query)));
+}
+
+function openShipmentDialog(orderId,onComplete){
+  const backdrop=document.createElement('div');backdrop.className='modal-backdrop';backdrop.innerHTML=`<form class="modal" id="onlineShipmentForm"><div class="modal-head"><h2>订单发货</h2><button type="button" class="close" data-cancel-shipment>×</button></div><div class="form-grid"><div class="field full"><label>订单编号</label><input value="${orderId}" disabled></div><div class="field"><label>物流公司</label><select name="carrier"><option>Canada Post</option><option>UPS</option><option>FedEx</option><option>天猫国际海外仓物流</option></select></div><div class="field"><label>物流单号</label><input name="tracking" placeholder="扫描或输入物流单号" required></div></div><div class="modal-foot"><button type="button" class="btn" data-cancel-shipment>取消</button><button class="btn success">发货完成</button></div></form>`;document.body.appendChild(backdrop);
+  backdrop.querySelectorAll('[data-cancel-shipment]').forEach(button=>button.onclick=()=>backdrop.remove());backdrop.querySelector('form').onsubmit=event=>{event.preventDefault();const form=new FormData(event.currentTarget),overrides=orderOverrides();overrides[orderId]={...(overrides[orderId]||{}),status:'已发货',carrier:form.get('carrier'),tracking:form.get('tracking'),shippedAt:new Date().toLocaleString('zh-CN',{hour12:false})};saveOrderOverrides(overrides);backdrop.remove();onComplete()};
 }
 
 function showModuleError(error){const results=document.querySelector('.jike-results');if(results)results.innerHTML=`<div class="empty">${error.message}</div>`;console.error(error)}
