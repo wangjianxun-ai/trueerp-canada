@@ -16,7 +16,7 @@ function escapeFlow(value){return String(value??'').replace(/[&<>"']/g,char=>({'
 
 function installWorkflowNav(){
   const content=document.querySelector('.content');if(!content)return;
-  const labels={dashboard:'经营概览',products:'产品管理',purchase:'采购管理',stock:'库存管理',orders:'订单管理',shipping:'发货管理'};
+  const labels={dashboard:'经营概览',products:'产品管理',purchase:'采购管理',stock:'库存管理',orders:'订单管理',shipping:'发货管理',settings:'系统设置'};
   Object.entries(labels).forEach(([page,label])=>{const item=document.querySelector(`[data-page="${page}"] span:last-child`);if(item&&item.textContent!==label)item.textContent=label});
 }
 
